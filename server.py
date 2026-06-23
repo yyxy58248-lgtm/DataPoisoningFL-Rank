@@ -1,7 +1,8 @@
 from federated_learning.utils.noise_injection_methods import gaussian_attack
 from federated_learning.utils.noise_injection_methods import zero_gradient
 from federated_learning.utils.noise_injection_methods import shifted_mean
-from federated_learning.utils.defense_methods import mandera_detect
+from federated_learning.utils.noise_injection_methods import sign_flipping
+from federated_learning.utils.defense_methods_new import mandera_detect
 from federated_learning.utils.defense_methods import multi_krum
 from federated_learning.utils.defense_methods import bulyan
 from federated_learning.utils.defense_methods import median
@@ -77,7 +78,7 @@ def train_subset_of_clients(epoch, args, clients, poisoned_workers, noise_method
     
     # detection defense occurs just before parameter aggregation
     if def_method in [mandera_detect]:
-        bad_indexes = mandera_detect(gradients)
+        bad_indexes, precision, recall, f1, feats = mandera_detect(gradients, poisoned_workers)
         good_parameters = [param for n, param in enumerate(parameters) if n not in bad_indexes]
         new_nn_params = average_nn_parameters(good_parameters)
     elif def_method in [multi_krum]:
@@ -114,7 +115,12 @@ def train_subset_of_clients(epoch, args, clients, poisoned_workers, noise_method
 
     torch.cuda.empty_cache()
 
-    return clients[0].test(), random_workers, client_grads
+    # 返回检测指标（仅当使用 mandera_detect 时有效）
+    if def_method == mandera_detect and 'precision' in dir():
+        detection_info = (precision, recall, f1, feats)
+    else:
+        detection_info = None
+    return clients[0].test(), random_workers, client_grads, detection_info
 
 def create_clients(args, train_data_loaders, test_data_loader):
     """
@@ -133,20 +139,50 @@ def run_machine_learning(clients, args, poisoned_workers, noise_method, def_meth
     epoch_test_set_results = []
     worker_selection = []
     epoch_grads = []
+    detection_history = []
     for epoch in range(1, args.get_num_epochs() + 1):
-        results, workers_selected, client_grads = train_subset_of_clients(epoch, args, clients, poisoned_workers, noise_method, def_method)
+        results, workers_selected, client_grads, detection_info = train_subset_of_clients(epoch, args, clients, poisoned_workers, noise_method, def_method)
+        
+        if detection_info is not None:
+            detection_history.append(detection_info)
 
         epoch_test_set_results.append(results)
         worker_selection.append(workers_selected)
         epoch_grads.append(client_grads)
 
-    return convert_results_to_csv(epoch_test_set_results), worker_selection, epoch_grads
+    return convert_results_to_csv(epoch_test_set_results), worker_selection, epoch_grads, detection_history
 
 def run_exp(replacement_method, num_poisoned_workers, KWARGS, client_selection_strategy, idx, noise_method=None, def_method=None, dataset="FASHION"):
     log_files, results_files, models_folders, worker_selections_files = generate_experiment_ids(idx, 1)
 
-    # Initialize logger
-    handler = logger.add(log_files[0], enqueue=True)
+    # 将日志文件重定向到 supplemental_experiments 目录，并使用有意义的命名
+    os.makedirs("supplemental_experiments", exist_ok=True)
+    
+    # 根据攻击类型和防御方法生成有意义的日志文件名
+    # 从 noise_method 和 def_method 获取名称
+    attack_name_map = {
+        gaussian_attack: "gaussian_attack",
+        zero_gradient: "zero_gradient_attack",
+        shifted_mean: "shifted_mean_attack",
+        sign_flipping: "sign_flipping_attack",
+        None: "no_attack"
+    }
+    defense_name_map = {
+        mandera_detect: "mandera_detect",
+        multi_krum: "multi_krum",
+        bulyan: "bulyan",
+        median: "median",
+        tr_mean: "tr_mean",
+        fltrust: "fltrust",
+        None: "none"
+    }
+    
+    attack_str = attack_name_map.get(noise_method, "unknown_attack")
+    defense_str = defense_name_map.get(def_method, "unknown_defense")
+    log_filename = f"supplemental_experiments/{attack_str}_{defense_str}_{num_poisoned_workers}.log"
+    
+    # 使用新的日志路径
+    handler = logger.add(log_filename, enqueue=True)
 
     args = Arguments(logger)
     args.set_model_save_path(models_folders[0])
@@ -182,7 +218,7 @@ def run_exp(replacement_method, num_poisoned_workers, KWARGS, client_selection_s
     # start timer
     start_time = time.perf_counter()
     # run ML training/attack/defense
-    results, worker_selection, epoch_grads = run_machine_learning(clients, args, poisoned_workers, noise_method, def_method)
+    results, worker_selection, epoch_grads, detection_history = run_machine_learning(clients, args, poisoned_workers, noise_method, def_method)
     # end timer
     end_time = time.perf_counter()
     
@@ -199,32 +235,65 @@ def run_exp(replacement_method, num_poisoned_workers, KWARGS, client_selection_s
         print(error)   
 
     # save perdiction performance results
-    save_results(results, os.path.join(path, results_files[0]))
+    # 保存 MANDERA 检测指标和节点特征
+    if def_method == mandera_detect and detection_history:
+        # 构建攻击名称映射
+        attack_name_map = {
+            gaussian_attack: "GA",
+            zero_gradient: "ZG",
+            shifted_mean: "MS",
+            sign_flipping: "SF",
+            None: "None"
+        }
+        attack_short = attack_name_map.get(noise_method, "unknown")
+        n_mal = num_poisoned_workers
+        
+        # 保存检测指标到 CSV
+        detection_file = "mandera_detection_results/" + attack_short + "_" + str(n_mal) + "_detection.csv"
+        os.makedirs("mandera_detection_results", exist_ok=True)
+        
+        detection_df = pd.DataFrame(columns=["epoch", "precision", "recall", "f1"])
+        for epoch_idx, (precision_val, recall_val, f1_val, feats_val) in enumerate(detection_history, 1):
+            new_row = pd.DataFrame([{
+                "epoch": epoch_idx,
+                "precision": precision_val,
+                "recall": recall_val,
+                "f1": f1_val
+            }])
+            detection_df = pd.concat([detection_df, new_row], ignore_index=True)
+        detection_df.to_csv(detection_file, index=False)
+        
+        # 保存第10轮的节点特征
+        #if len(detection_history) >= 10:
+            #features_file = "mandera_detection_results/" + attack_short + "_" + str(n_mal) + "_features_epoch10.csv"
+            #feats_df = feats_val.copy()
+            #feats_df.columns = ["e_i", "v_i"]
+            #feats_df["node_id"] = range(len(feats_df))
+            #feats_df["is_malicious"] = 0
+            #for idx in poisoned_workers:
+                #if idx < len(feats_df):
+                    #feats_df.loc[idx, "is_malicious"] = 1
+            #feats_df[["node_id", "e_i", "v_i", "is_malicious"]].to_csv(features_file, index=False)
+    
+    #save_results(results, os.path.join(path, results_files[0]))
 
     # save timing results
     np.savetxt(os.path.join(path, "{}_timing.csv".format(results_files[0][:-4])),
                 [start_time, end_time], delimiter=",", fmt="%s")
 
-    # only save gradients if not running full defense    
-    if def_method is None:
-        save_results(worker_selection, os.path.join(path, worker_selections_files[0]))
-
-        flat_epochs = flatten_params(epoch_grads)
-        for n, flat in enumerate(flat_epochs):
-            # save as csv format
-            # np.savetxt("./{}/{}_flatgrads.csv".format(path, n), flat, delimiter=',')
-            # save as hdf5 format
-            df = pd.DataFrame(flat, columns=None, index=None)
-            # erase existing hdf5 file
-            if n == 0:
-                mode = 'w'
-            # append subsequent epochs to existing file
-            else:
-                mode = 'a'    
-            df.to_hdf(os.path.join(path, "flatgrads.hdf5"), key="epoch_{}".format(n), mode=mode, index=False)
-        # save list of poisoned workers
-        np.savetxt(os.path.join(path, "{}_poisoned.csv".format(worker_selections_files[0][:-4])),
-                poisoned_workers, delimiter=",", fmt="%s")
+    # only save gradients if not running full defense (DISABLED to save space)
+    # if def_method is None:
+    #     save_results(worker_selection, os.path.join(path, worker_selections_files[0]))
+    #     flat_epochs = flatten_params(epoch_grads)
+    #     for n, flat in enumerate(flat_epochs):
+    #         df = pd.DataFrame(flat, columns=None, index=None)
+    #         if n == 0:
+    #             mode = 'w'
+    #         else:
+    #             mode = 'a'    
+    #         df.to_hdf(os.path.join(path, "flatgrads.hdf5"), key="epoch_{}".format(n), mode=mode, index=False)
+    #     np.savetxt(os.path.join(path, "{}_poisoned.csv".format(worker_selections_files[0][:-4])),
+    #             poisoned_workers, delimiter=",", fmt="%s")
 
     logger.remove(handler)
 

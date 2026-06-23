@@ -127,7 +127,11 @@ def bulyan(gradients, n_attackers):
     return None, np.array(candidate_indices)
 
 
-def mandera_detect(gradients):
+def mandera_detect(gradients, true_poisoned_workers=None):
+    """
+    MANDERA恶意节点检测
+    返回: (predict_poi, precision, recall, f1, feats)
+    """
     # gradients is a dataframe, poi_index is a lite-type object
     if type(gradients) == pd.DataFrame:
         ranks = gradients.rank(axis=0, method='average')
@@ -135,6 +139,7 @@ def mandera_detect(gradients):
         mus = ranks.mean(axis=1)
         feats = pd.concat([mus, vars], axis=1)
         assert feats.shape == (gradients.shape[0], 2)
+        n_nodes = gradients.shape[0]
     elif type(gradients) == list:
         flat_grad = flatten_grads(gradients)
         ranks = pd.DataFrame(flat_grad).rank(axis=0, method='average')
@@ -142,6 +147,7 @@ def mandera_detect(gradients):
         mus = ranks.mean(axis=1)
         feats = pd.concat([mus, vars], axis=1)
         assert feats.shape == (ranks.shape[0], 2)
+        n_nodes = len(gradients)
     else:
         print("Support not implemented for generic matrixes, please use a pandas dataframe, or a list to be cast into a dataframe")
         assert type(gradients) in [pd.DataFrame, list]
@@ -156,12 +162,6 @@ def mandera_detect(gradients):
     diff_g0 = len(vars[group == 0]) - vars[group == 0].nunique()
     diff_g1 = len(vars[group == 1]) - vars[group == 1].nunique()
 
-    # diff_g0 = len(vars[group == 0]) - gradients[group == 0].nunique(axis=1)
-    # diff_g1 = len(vars[group == 1]) - gradients[group == 1].nunique(axis=1)
-
-    # diff_g0 = len(vars[group == 0]) - gradients[0][group == 1].nunique()
-    # diff_g1 = len(vars[group == 1]) - gradients[0][group == 1].nunique()
-   
     # if no group found with matching gradients, mark the smaller group as malicious
     if diff_g0 == diff_g1:
         # get the minority label
@@ -180,8 +180,21 @@ def mandera_detect(gradients):
     # see which indexes match the minority label
     predict_poi = [n for n, l in enumerate(group) if l == bad_label]
 
-    return predict_poi
+    # 计算检测指标（如果提供了真实恶意节点列表）
+    precision = 0.0
+    recall = 0.0
+    f1 = 0.0
+    
+    if true_poisoned_workers is not None:
+        tp = len(set(predict_poi) & set(true_poisoned_workers))
+        fp = len(set(predict_poi) - set(true_poisoned_workers))
+        fn = len(set(true_poisoned_workers) - set(predict_poi))
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
+    return predict_poi, precision, recall, f1, feats
 
 def fltrust(gradients):
     """

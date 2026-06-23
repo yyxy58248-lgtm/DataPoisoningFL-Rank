@@ -1,6 +1,7 @@
 from .nets import Cifar10CNN
 from .nets import FashionMNISTCNN
 from .nets import MNISTCNN
+from .nets import MedMNISTCNN   # 添加这一行
 from .worker_selection import BeforeBreakpoint
 from .worker_selection import AfterBreakpoint
 from .worker_selection import PoisonerProbability
@@ -74,8 +75,12 @@ class Arguments:
             self.net = MNISTCNN
             self.train_data_loader_pickle_path = "data_loaders/qmnist/train_data_loader.pickle"
             self.test_data_loader_pickle_path = "data_loaders/qmnist/test_data_loader.pickle"
+        elif dataset == "medmnist":
+            self.net = MedMNISTCNN
+            self.train_data_loader_pickle_path = "data_loaders/medmnist/train_data_loader.pickle"
+            self.test_data_loader_pickle_path = "data_loaders/medmnist/test_data_loader.pickle"
         else:
-            assert dataset in ['CIFAR10', 'FASHION', 'MNIST', 'QMNIST']
+            assert dataset in ['CIFAR10', 'FASHION', 'MNIST', 'QMNIST', 'medmnist']
 
     def get_round_worker_selection_strategy(self):
         return self.round_worker_selection_strategy

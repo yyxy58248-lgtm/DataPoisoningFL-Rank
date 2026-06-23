@@ -9,17 +9,21 @@ def poison_data(logger, distributed_dataset, num_workers, poisoned_worker_ids, r
     :type logger: loguru.logger
     :param distributed_dataset: Distributed dataset
     :type distributed_dataset: list(tuple)
-    :param num_workers: Number of workers overall
+    :param num_workers: number of workers
     :type num_workers: int
-    :param poisoned_worker_ids: IDs poisoned workers
+    :param poisoned_worker_ids: list of worker IDs to poison
     :type poisoned_worker_ids: list(int)
-    :param replacement_method: Replacement methods to use to replace
-    :type replacement_method: list(method)
+    :param replacement_method: the class label replacement method
+    :type replacement_method: function
     """
-    # TODO: Add support for multiple replacement methods?
     poisoned_dataset = []
 
-    class_labels = list(set(distributed_dataset[0][1]))
+    # 修复：从所有客户端收集标签，而不是只从第一个
+    all_labels = set()
+    for worker_data in distributed_dataset:
+        labels = worker_data[1]
+        all_labels.update(set(labels))
+    class_labels = list(all_labels)
 
     logger.info("Poisoning data for workers: {}".format(str(poisoned_worker_ids)))
 
