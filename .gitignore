@@ -133,3 +133,27 @@ renv/
 *.ckpt
 
 
+# 各类备份文件（你目录里大量.bak .backup .nobackup）
+*.bak
+*.backup
+*.nobackup
+
+# Python缓存
+__pycache__/
+*.pyc
+*.pickle
+
+# R语言缓存
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+*.Rproj.user/
+renv/
+
+# 模型权重、数据集、大文件
+*.pth
+*.ckpt
+
+
+
